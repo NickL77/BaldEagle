@@ -1,12 +1,27 @@
 import torch
 import os
-
+import s3fs
 from tqdm import tqdm
 
 from huggingface_hub import HfFileSystem
 
 MAX_LEN = 2048
 
+
+def get_r2_fs():
+    if os.getenv("R2_ACCESS_KEY") is None:
+        raise ValueError("R2_ACCESS_KEY is not set")
+    if os.getenv("R2_SECRET_KEY") is None:
+        raise ValueError("R2_SECRET_KEY is not set")
+    if os.getenv("R2_ENDPOINT_URL") is None:
+        raise ValueError("R2_ENDPOINT_URL is not set")
+    
+    return s3fs.S3FileSystem(
+            key=os.getenv("R2_ACCESS_KEY"),
+            secret=os.getenv("R2_SECRET_KEY"),
+            client_kwargs={'endpoint_url': os.getenv("R2_ENDPOINT_URL")},
+            s3_additional_kwargs=dict(ACL="private")
+        )
 
 def list_local_files(path, suffixes=[".ckpt"]):
     datapaths = []
@@ -21,6 +36,9 @@ def list_local_files(path, suffixes=[".ckpt"]):
 
     return datapaths
 
+def list_r2_files(r2_fs, path, suffixes=[".ckpt"]):
+    files = r2_fs.find(path)
+    return [file for file in files if file.endswith(tuple(suffixes))]
 
 def list_hf_files(repo, suffixes=[".ckpt"]):
     hf_fs = HfFileSystem()
@@ -185,6 +203,18 @@ class Eagle3HFDataset(Eagle3LocalDataset):
 
     def _open_file(self, index):
         with self.hf_fs.open(self.datapaths[index]) as f:
+            return torch.load(f, weights_only=False)
+        
+class Eagle3R2Dataset(Eagle3LocalDataset):
+    def __init__(self, datapath, r2_fs, transform=None, max_len=MAX_LEN):
+        super().__init__(datapath, transform, max_len)
+        self.r2_fs = None
+        # self.r2_fs = r2_fs
+
+    def _open_file(self, index):
+        if self.r2_fs is None:
+            self.r2_fs = get_r2_fs()
+        with self.r2_fs.open(self.datapaths[index]) as f:
             return torch.load(f, weights_only=False)
 
 class DataCollatorWithPadding:
